@@ -102,21 +102,96 @@ class ContentFetcher:
         except Exception as e:
             return f"Summary generation failed: {str(e)}"
     
-    def suggest_anchor_text(self, page_content: Dict, target_url: str) -> List[str]:
+    def analyze_topic_relevance(self, page_content: Dict, target_topic: str) -> Dict:
+        """Analyze how well the page content matches the target topic"""
         prompt = f"""
-        Based on the following webpage information, suggest EXACTLY 2 natural and SEO-friendly anchor text options that match the language and tone of the page:
+        Analyze how relevant this webpage content is to the target topic: "{target_topic}"
         
+        Page Information:
+        Title: {page_content.get('title', '')}
+        Meta Description: {page_content.get('meta_description', '')}
+        Content Summary: {page_content.get('summary', '')}
+        
+        Target Topic: {target_topic}
+        
+        Please provide:
+        1. Relevance Score (0-10): How relevant is this page to the target topic?
+        2. Topic Match Analysis: Explain the connection between page content and target topic
+        3. Key Matching Elements: What specific elements on the page relate to the target topic?
+        4. Content Context: What is the overall context/theme of this page?
+        
+        Format your response as:
+        Relevance Score: [0-10]
+        Topic Match: [brief analysis]
+        Matching Elements: [key elements]
+        Context: [page context]
+        """
+        
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300,
+                temperature=0.3
+            )
+            
+            analysis = response.choices[0].message.content.strip()
+            
+            # Parse the response to extract relevance score
+            relevance_score = 0
+            lines = analysis.split('\n')
+            for line in lines:
+                if 'Relevance Score:' in line:
+                    try:
+                        score_text = line.split(':')[1].strip()
+                        relevance_score = float(re.findall(r'\d+(?:\.\d+)?', score_text)[0])
+                        break
+                    except:
+                        pass
+            
+            return {
+                'relevance_score': relevance_score,
+                'analysis': analysis,
+                'success': True
+            }
+            
+        except Exception as e:
+            return {
+                'relevance_score': 0,
+                'analysis': f"Topic analysis failed: {str(e)}",
+                'success': False
+            }
+    
+    def suggest_topic_based_anchor_text(self, page_content: Dict, target_url: str, target_topic: str, topic_analysis: Dict) -> List[str]:
+        """Generate anchor text suggestions based on target topic and page relevance"""
+        relevance_score = topic_analysis.get('relevance_score', 0)
+        topic_analysis_text = topic_analysis.get('analysis', '')
+        
+        prompt = f"""
+        Create EXACTLY 2 anchor text suggestions for a link to this URL, specifically focused on the target topic: "{target_topic}"
+        
+        Page Information:
         URL: {target_url}
         Title: {page_content.get('title', '')}
         Meta Description: {page_content.get('meta_description', '')}
         Content Summary: {page_content.get('summary', '')}
         
-        Create anchor text that is:
-        1. Natural and contextually relevant
-        2. In the same language as the page content
-        3. Descriptive but not over-optimized
-        4. 2-5 words long
-        5. Based on the actual content themes
+        Target Topic: {target_topic}
+        Topic Relevance Score: {relevance_score}/10
+        Topic Analysis: {topic_analysis_text}
+        
+        Create anchor text that:
+        1. Relates directly to the target topic "{target_topic}"
+        2. Is natural and contextually relevant to the page content
+        3. Matches the language and tone of the page
+        4. Is 2-6 words long
+        5. Is SEO-friendly but not over-optimized
+        6. Reflects the topic relevance (if low relevance, make it more generic but still topic-related)
+        
+        Consider the topic relevance score:
+        - High relevance (7-10): Use specific, topic-focused anchor text
+        - Medium relevance (4-6): Use broader topic-related anchor text
+        - Low relevance (0-3): Use generic but topic-adjacent anchor text
         
         Return ONLY 2 anchor text suggestions, one per line, without numbers, bullets, or any other formatting.
         """
@@ -125,23 +200,28 @@ class ContentFetcher:
             response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=100,
+                max_tokens=150,
                 temperature=0.7
             )
             
             suggestions = response.choices[0].message.content.strip().split('\n')
             clean_suggestions = [s.strip('- ').strip() for s in suggestions if s.strip()][:2]
             
+            # Fallback suggestions if AI didn't provide enough
             while len(clean_suggestions) < 2:
-                domain = urlparse(target_url).netloc
-                clean_suggestions.append(f"Visit {domain}")
+                if relevance_score >= 7:
+                    clean_suggestions.append(f"{target_topic} guide")
+                elif relevance_score >= 4:
+                    clean_suggestions.append(f"Learn about {target_topic}")
+                else:
+                    clean_suggestions.append(f"{target_topic} resource")
             
             return clean_suggestions[:2]
             
         except Exception as e:
-            st.error(f"Anchor text generation failed: {str(e)}")
-            domain = urlparse(target_url).netloc
-            return [f"Learn more", f"Visit {domain}"]
+            st.error(f"Topic-based anchor text generation failed: {str(e)}")
+            # Fallback suggestions based on topic
+            return [f"{target_topic} information", f"Learn more about {target_topic}"]
 
 def calculate_text_similarity(text1: str, text2: str) -> float:
     try:
@@ -200,7 +280,7 @@ def calculate_url_similarity(url1: str, url2: str) -> float:
 
 def main():
     st.title("🔗 SEO Link Opportunity Analyzer")
-    st.markdown("Analyze link opportunities and suggest anchor texts using OpenAI content analysis")
+    st.markdown("Analyze link opportunities and generate topic-focused anchor texts using AI content analysis")
     
     with st.sidebar:
         st.header("🔧 API Configuration")
@@ -213,6 +293,22 @@ def main():
         url_limit = st.slider("Maximum URLs to analyze", min_value=1, max_value=500, value=50)
         
         request_timeout = st.slider("Request timeout (seconds)", min_value=5, max_value=30, value=10)
+        
+        st.divider()
+        
+        st.subheader("ℹ️ How Topic-Based Anchors Work")
+        st.markdown("""
+        **Enhanced Anchor Text Generation:**
+        
+        1. **Topic Analysis**: AI analyzes each page's relevance to your target topic
+        2. **Relevance Scoring**: Pages are scored 0-10 for topic relevance
+        3. **Smart Suggestions**: Anchor text is tailored based on:
+           - High relevance (7-10): Specific, topic-focused anchors
+           - Medium relevance (4-6): Broader topic-related anchors  
+           - Low relevance (0-3): Generic but topic-adjacent anchors
+        
+        This ensures your anchor text is contextually appropriate and SEO-effective!
+        """)
     
     if not openai_api_key:
         st.warning("⚠️ Please enter your OpenAI API key in the sidebar to continue.")
@@ -220,11 +316,35 @@ def main():
     
     content_fetcher = ContentFetcher(openai_api_key)
     
-    tab1, tab2 = st.tabs(["🎯 Anchor Text Suggestions", "🔍 Opportunity Matching"])
+    tab1, tab2 = st.tabs(["🎯 Topic-Based Anchor Suggestions", "🔍 Opportunity Matching"])
     
     with tab1:
-        st.header("Anchor Text Suggestions")
-        st.markdown("Upload opportunity URLs and get 2 AI-powered anchor text suggestions based on page language and content")
+        st.header("🎯 Topic-Based Anchor Text Suggestions")
+        st.markdown("Upload opportunity URLs and specify your target topic to get AI-powered, topic-focused anchor text suggestions")
+        
+        # Topic input section
+        st.subheader("🏷️ Target Topic Configuration")
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            target_topic = st.text_input(
+                "Enter your target topic/theme:",
+                placeholder="e.g., 'digital marketing', 'sustainable energy', 'fitness training'",
+                help="This topic will be used to generate contextually relevant anchor text suggestions"
+            )
+        
+        with col2:
+            st.markdown("**Topic Examples:**")
+            st.markdown("• Digital Marketing")
+            st.markdown("• Web Development") 
+            st.markdown("• Health & Wellness")
+            st.markdown("• Financial Planning")
+        
+        if not target_topic:
+            st.info("👆 Please enter your target topic above to proceed with anchor text generation")
+            return
+        
+        st.success(f"✅ Target topic set: **{target_topic}**")
         
         uploaded_file = st.file_uploader(
             "Upload CSV file with opportunity URLs",
@@ -244,7 +364,7 @@ def main():
                     st.subheader("Data Preview")
                     st.dataframe(df.head())
                     
-                    if st.button("🚀 Generate Anchor Text Suggestions", key="analyze_anchors"):
+                    if st.button("🚀 Generate Topic-Based Anchor Suggestions", key="analyze_anchors"):
                         urls_to_process = df[url_column].tolist()[:url_limit]
                         
                         progress_bar = st.progress(0)
@@ -254,17 +374,27 @@ def main():
                         for i, url in enumerate(urls_to_process):
                             status_text.text(f"Processing URL {i+1}/{len(urls_to_process)}: {url}")
                             
+                            # Fetch page content
                             page_content = content_fetcher.fetch_page_content(url)
                             
                             if page_content['success']:
-                                anchor_suggestions = content_fetcher.suggest_anchor_text(page_content, url)
+                                # Analyze topic relevance
+                                topic_analysis = content_fetcher.analyze_topic_relevance(page_content, target_topic)
+                                
+                                # Generate topic-based anchor suggestions
+                                anchor_suggestions = content_fetcher.suggest_topic_based_anchor_text(
+                                    page_content, url, target_topic, topic_analysis
+                                )
                                 
                                 results.append({
                                     'URL': url,
                                     'Title': page_content['title'][:100] + '...' if len(page_content['title']) > 100 else page_content['title'],
                                     'Word_Count': page_content['word_count'],
+                                    'Topic_Relevance_Score': f"{topic_analysis.get('relevance_score', 0)}/10",
+                                    'Topic_Analysis': topic_analysis.get('analysis', 'N/A')[:200] + '...' if len(topic_analysis.get('analysis', '')) > 200 else topic_analysis.get('analysis', 'N/A'),
                                     'Anchor_Text_1': anchor_suggestions[0],
                                     'Anchor_Text_2': anchor_suggestions[1],
+                                    'Target_Topic': target_topic,
                                     'Status': 'Success'
                                 })
                             else:
@@ -272,8 +402,11 @@ def main():
                                     'URL': url,
                                     'Title': 'N/A',
                                     'Word_Count': 0,
+                                    'Topic_Relevance_Score': '0/10',
+                                    'Topic_Analysis': 'Content not accessible',
                                     'Anchor_Text_1': 'Content not accessible',
                                     'Anchor_Text_2': 'Content not accessible',
+                                    'Target_Topic': target_topic,
                                     'Status': 'Failed'
                                 })
                             
@@ -282,35 +415,66 @@ def main():
                         
                         if results:
                             results_df = pd.DataFrame(results)
-                            st.success(f"✅ Generated anchor text suggestions for {len(results)} URLs")
+                            st.success(f"✅ Generated topic-based anchor text suggestions for {len(results)} URLs")
                             
                             success_count = len([r for r in results if r['Status'] == 'Success'])
-                            col1, col2, col3 = st.columns(3)
+                            col1, col2, col3, col4 = st.columns(4)
                             with col1:
                                 st.metric("Total URLs", len(results))
                             with col2:
                                 st.metric("Successful", success_count)
                             with col3:
                                 st.metric("Failed", len(results) - success_count)
+                            with col4:
+                                avg_relevance = np.mean([float(r['Topic_Relevance_Score'].split('/')[0]) for r in results if r['Status'] == 'Success'])
+                                st.metric("Avg Topic Relevance", f"{avg_relevance:.1f}/10")
                             
-                            st.subheader("Results")
+                            # Show results with topic relevance insights
+                            st.subheader("🎯 Topic-Based Results Analysis")
+                            
+                            # Categorize by relevance score
+                            high_relevance = [r for r in results if r['Status'] == 'Success' and float(r['Topic_Relevance_Score'].split('/')[0]) >= 7]
+                            medium_relevance = [r for r in results if r['Status'] == 'Success' and 4 <= float(r['Topic_Relevance_Score'].split('/')[0]) < 7]
+                            low_relevance = [r for r in results if r['Status'] == 'Success' and float(r['Topic_Relevance_Score'].split('/')[0]) < 4]
+                            
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("High Relevance (7-10)", len(high_relevance), help="Pages highly relevant to your topic")
+                            with col2:
+                                st.metric("Medium Relevance (4-6)", len(medium_relevance), help="Pages moderately relevant to your topic")
+                            with col3:
+                                st.metric("Low Relevance (0-3)", len(low_relevance), help="Pages with low topic relevance")
+                            
+                            st.subheader("📊 Detailed Results")
                             st.dataframe(results_df)
                             
+                            # Download options
                             csv = results_df.to_csv(index=False)
                             st.download_button(
-                                label="📥 Download Results as CSV",
+                                label="📥 Download Complete Results as CSV",
                                 data=csv,
-                                file_name="anchor_text_suggestions.csv",
+                                file_name=f"topic_based_anchor_suggestions_{target_topic.replace(' ', '_')}.csv",
                                 mime="text/csv"
                             )
+                            
+                            # High-relevance only download
+                            if high_relevance:
+                                high_relevance_df = pd.DataFrame(high_relevance)
+                                high_csv = high_relevance_df.to_csv(index=False)
+                                st.download_button(
+                                    label="⭐ Download High-Relevance Results Only",
+                                    data=high_csv,
+                                    file_name=f"high_relevance_anchors_{target_topic.replace(' ', '_')}.csv",
+                                    mime="text/csv"
+                                )
                         
-                        status_text.text("✅ Analysis complete!")
+                        status_text.text("✅ Topic-based analysis complete!")
                         
             except Exception as e:
                 st.error(f"Error processing file: {str(e)}")
     
     with tab2:
-        st.header("Opportunity Matching")
+        st.header("🔍 Opportunity Matching")
         st.markdown("Find relevant opportunity URLs based on keyword and URL matching")
         
         input_method = st.radio(
